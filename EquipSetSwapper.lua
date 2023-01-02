@@ -1,5 +1,5 @@
 --[[
-	Copyright © 2021, Tylas
+	Copyright Â© 2023, Tylas
 	All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without
@@ -28,50 +28,58 @@
 
 _addon.name = 'EquipSetSwapper'
 _addon.author = 'Tylas'
-_addon.version = '1.0.0'
+_addon.version = '1.1.0'
 _addon.commands = {'ess'}
 
 require('tables')
 require('logger')
-file = require('files')
-config = require('config')
+local file = require('files')
+local config = require('config')
 
 local defaults = {}
 defaults.current = ''
 defaults.userId = ''
 
+-- directory names
 local dataDir = 'data\\'
 local backupDir = 'backup\\'
 local ffxiUserDir = 'FINAL FANTASY XI\\USER\\'
-local userDir = windower.pol_path .. '\\..\\' .. ffxiUserDir
+
+-- full directory paths
+-- NOTE: "windower" functions require a full path, however the addon "files" library requires paths relative to the addon directory only
+local userPath = windower.pol_path .. '\\..\\' .. ffxiUserDir
+local dataPath = windower.addon_path .. dataDir
 
 local isLoaded = false
+local confirmFile = nil
 
 windower.register_event('load', function()
 	if windower.ffxi.get_info().logged_in then
-		settings = config.load(defaults)
+		Settings = config.load(defaults)
 		isLoaded = true
-		
-		if checkUserId() then
-			checkCurrentSet()
+
+		if CheckUserId() then
+			CheckCurrentSet()
 		end
 	end
 end)
 
 windower.register_event('login', function()
 	if not isLoaded then
-		settings = config.load(defaults)
+		Settings = config.load(defaults)
 		isLoaded = true
-		
-		if checkUserId() then
-			checkCurrentSet()
+		confirmFile = nil
+
+		if CheckUserId() then
+			CheckCurrentSet()
 		end
 	end
 end)
 
 windower.register_event('logout', function()
-	settings = nil
+	Settings = nil
 	isLoaded = false
+	confirmFile = nil
 end)
 
 windower.register_event('addon command', function(...)
@@ -80,10 +88,10 @@ windower.register_event('addon command', function(...)
 	if args[1] then
 		command = string.lower(args[1])
 	end
-	
+
 	if command == 'setuserid' then
 		if args[2] then
-			setUserId(args[2])
+			SetUserId(args[2])
 		else
 			log('User ID missing.')
 		end
@@ -91,16 +99,16 @@ windower.register_event('addon command', function(...)
 	end
 
 	-- commands that require the user ID
-	
-	if not checkUserId() then
+
+	if not CheckUserId() then
 		return
 	end
-	
+
 	if command == 'list' then
 		log('Listing equip set files:')
-		local subDirs = windower.get_dir(windower.addon_path .. dataDir .. settings.userId)
+		local subDirs = windower.get_dir(dataPath .. Settings.userId)
 		if subDirs then
-			for k,v in pairs(subDirs) do	
+			for k,v in pairs(subDirs) do
 				if v ~= 'backup' then
 					log(v)
 				end
@@ -109,175 +117,189 @@ windower.register_event('addon command', function(...)
 			log('No files found.')
 		end
 	elseif command == 'save' or command == 'load' or command == 'swap' then -- file commands
-		coroutine.sleep(0.5) -- short delay, otherwise menu_open might report a wrong value
-		
 		-- check reason: the equipset are loaded by the game when the menu is open, saved when it is closed.
 		-- any change to the sets while they are open would be lost upon closing the menu
 		if windower.ffxi.get_info().menu_open then
 			log('Close all menus before using this command.')
 			return
 		end
-		
+
 		local fileName
 		if args[2] then
 			fileName = string.lower(args[2])
 		else
-			showHelp()
+			ShowHelp()
 			return
 		end
-		
+
 		if command == 'save' then
 			if fileName == 'backup' then
 				log('File name \'backup\' is reserved. Choose a different name.')
 				return
 			end
-		
-			checkBackup()
-			saveSet(fileName)
-			checkCurrentSet();
+
+			if SetExists(fileName) and fileName ~= Settings.current and confirmFile ~= fileName then
+				log('File \'' .. fileName .. '\' exists but is not the current file. Repeat command to confirm overwrite.')
+				confirmFile = fileName
+				return
+			end
+
+			CheckBackup()
+			SaveSet(fileName)
+			CheckCurrentSet();
+
+			confirmFile = nil
 		elseif command == 'load' then
-			checkBackup()
-			loadSet(fileName)
-			checkCurrentSet();
+			CheckBackup()
+			LoadSet(fileName)
+			CheckCurrentSet();
 		elseif command == 'swap' then
-			checkBackup()
-			if settings.current == fileName then
+			CheckBackup()
+			if Settings.current == fileName then
 				log('File \'' .. fileName .. '\' is already active.')
-			elseif settings.current ~= '' then	
-				saveSet(settings.current)
-				loadSet(fileName)
-				checkCurrentSet();
+			elseif Settings.current ~= '' then
+				SaveSet(Settings.current)
+				LoadSet(fileName)
+				CheckCurrentSet();
 			else
 				log('No current file found. Save a new file before trying to swap.')
 			end
 		end
 	else
-		showHelp()
+		ShowHelp()
 	end
 end)
 
-function showHelp()
+function ShowHelp()
 	log('Commands: //ess')
-	log('save <file> - Saves your current equip sets')
-	log('load <file> - Loads an existing file, replacing all current equip sets')
-	log('swap <file> - Swaps to a different file, by first saving the current, then loading the other')
+	log('save <name> - Saves your current equip sets')
+	log('load <name> - Loads an existing file, replacing all current equip sets')
+	log('swap <name> - Swaps to a different file by first saving the current, then loading the other')
 	log('list - Lists all existing equip set files')
-	log('setUserId <ID> - Selects the character directory on which the above commands are performed')
+	log('setUserId <ID> - Selects the character on which the above commands are performed')
 end
 
-function checkCurrentSet()
-	if settings.current ~= '' then
-		log('Current = ' .. settings.current)
+function CheckCurrentSet()
+	if Settings.current ~= '' then
+		log('Current = ' .. Settings.current)
 	else
 		log('Save to a new file before starting to edit your equip sets.')
 		log('Type \'//ess help\' to see all available commands.')
 	end
 end
 
-function checkUserId()
-	if settings.userId == '' then
-		local subDirs = windower.get_dir(userDir)
+function CheckUserId()
+	if Settings.userId == '' then
+		local subDirs = windower.get_dir(userPath)
 		local autoSelect = false
-		
+
 		if (table.length(subDirs) == 2) then
 			autoSelect = true
 		else
 			log('The user ID must be set before using this addon.')
 			log('Each of your characters has its own ID that corresponds to the directory names found in ' .. ffxiUserDir)
-			log('Select one of the following IDs using the command //ess setUserId <id>')
+			log('Select one of the following IDs using the command \'//ess setUserId <id>\'.')
 		end
-		
+
 		for k,v in pairs(subDirs) do
 			if v ~= 'tig.dat' then
 				if autoSelect then
-					setUserId(v)
+					SetUserId(v)
 				else
 					log(v)
 				end
 			end
 		end
-		
+
 		return false
 	end
-	
+
 	return true
 end
 
-function setUserId(id)
-	if not windower.dir_exists(userDir .. id) then
+function SetUserId(id)
+	if not windower.dir_exists(userPath .. id) then
 		log('The directory ' .. ffxiUserDir .. id .. ' does not exist.')
 	else
-		settings.userId = string.lower(id)
-		settings:save()
-		log('User ID set to \'' .. settings.userId .. '\'.')
-		checkBackup()
-		checkCurrentSet()
+		Settings.userId = string.lower(id)
+		Settings:save()
+		log('User ID set to \'' .. Settings.userId .. '\'.')
+		CheckBackup()
+		CheckCurrentSet()
 	end
 end
 
 -- save / load logic
 
-function saveSet(fileName)
-	local srcDir = userDir .. settings.userId .. '\\'
-	local dstDir = file.create_path(dataDir .. settings.userId .. '\\' .. fileName)
-	
-	log('Saving file \'' .. fileName .. '\'...')
-	copyEquipSets(srcDir, dstDir)
-	
-	settings.current = fileName
-	settings:save()
+function SetExists(fileName)
+	return windower.dir_exists(dataPath .. Settings.userId .. '\\' .. fileName)
 end
 
-function loadSet(fileName)
-	local srcDir = windower.addon_path .. dataDir .. settings.userId .. '\\' .. fileName .. '\\'
-	local dstDir = userDir .. settings.userId .. '\\'
-	
+function SaveSet(fileName)
+	local srcDir = userPath .. Settings.userId .. '\\'
+	local dstDir = file.create_path(dataDir .. Settings.userId .. '\\' .. fileName)
+
+	log('Saving file \'' .. fileName .. '\'...')
+	CopyEquipSets(srcDir, dstDir)
+
+	Settings.current = fileName
+	Settings:save()
+end
+
+function LoadSet(fileName)
+	local srcDir = dataPath .. Settings.userId .. '\\' .. fileName .. '\\'
+	local dstDir = userPath .. Settings.userId .. '\\'
+
 	if windower.dir_exists(srcDir) then
 		log('Loading file \'' .. fileName .. '\'...')
-		copyEquipSets(srcDir, dstDir)
-		
-		settings.current = fileName
-		settings:save()
+		CopyEquipSets(srcDir, dstDir)
+
+		Settings.current = fileName
+		Settings:save()
 	else
 		log('File \'' .. fileName .. '\' does not exist.')
 	end
 end
 
-function checkBackup()
-	local addonBackupPath = dataDir .. settings.userId .. '\\' .. backupDir
+function CheckBackup()
+	local addonBackupPath = dataDir .. Settings.userId .. '\\' .. backupDir
 
 	if not windower.dir_exists(windower.addon_path .. addonBackupPath) then
-		local srcDir = userDir .. settings.userId .. '\\'
+		local srcDir = userPath .. Settings.userId .. '\\'
 		local dstDir = file.create_path(addonBackupPath)
-		
+
 		log('Backing up current equip sets to ' .. dstDir)
 		log('You can restore them using //ess load backup')
-		copyEquipSets(srcDir, dstDir)
+		CopyEquipSets(srcDir, dstDir)
 	end
 end
 
--- dirs must be full paths and already exist
+-- both dir parameters must be full paths of directories that already exist
 -- NOTE: the game will always re-create missing equipset files once you access the respective page in the menu
-function copyEquipSets(srcDir, dstDir)
-	for i = 0, 4 do
+function CopyEquipSets(srcDir, dstDir)
+	for i = 0, 9 do
 		local esFile = 'es' .. tostring(i) .. '.dat'
 		local srcFile = srcDir .. esFile
 		local dstFile = dstDir .. esFile
 		if windower.file_exists(srcFile) then
-			copyFile(srcFile, dstFile)
+			CopyFile(srcFile, dstFile)
 		end
 	end
-	
+
 	log('Done.')
 end
 
 -- overwrites dst if it already exists
-function copyFile(src, dst)
-	local fh = io.open(src, 'rb')
+function CopyFile(src, dst)
+	local fh, err = io.open(src, 'rb')
+	if not fh then error(err) return end
+
 	local content = fh:read('*all')
 	fh:close()
 
-	fh = io.open(dst, 'wb')
+	fh, err = io.open(dst, 'wb')
+	if not fh then error(err) return end
+
 	fh:write(content)
 	fh:close()
 end
